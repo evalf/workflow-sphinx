@@ -1,0 +1,4 @@
+example
+=======
+
+.. automodule:: example

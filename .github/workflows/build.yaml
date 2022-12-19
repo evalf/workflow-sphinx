@@ -1,0 +1,94 @@
+name: Build documentation using Sphinx
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: 'Sphinx source directory'
+        type: string
+        required: false
+        default: 'docs'
+      dist:
+        description: 'Install the target using a pre-built wheel from the given artifact.'
+        type: string
+        required: false
+        default: 'dist'
+      extras:
+        description: 'Comma-separated list of extras to include when installing the target.'
+        type: string
+        required: false
+        default: ''
+      requirements:
+        description: 'Space-separated list of packages required to build the documentation.'
+        type: string
+        required: false
+        default: ''
+      artifact:
+        description: 'Name of the docs artifact.'
+        type: string
+        required: false
+        default: 'docs'
+jobs:
+  build-docs:
+    name: Build documentation
+    runs-on: ubuntu-latest
+    env:
+      source: ${{ inputs.source }}
+      dist: ${{ inputs.dist }}
+      extras: ${{ inputs.extras }}
+      requirements: ${{ inputs.requirements }}
+      artifact: ${{ inputs.artifact }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Download dist
+        uses: actions/download-artifact@v3
+        with:
+          name: ${{ inputs.dist }}
+          path: dist
+      - name: Contents of dist
+        run: ls dist
+      - name: Install packages
+        shell: python
+        run: |
+          import os, pathlib, subprocess, sys
+          def find_wheel():
+              dist = pathlib.Path('dist')
+              # Obtain the name and version number from the source tarball.
+              tarballs = [path for path in dist.iterdir() if path.name.endswith('.tar.gz')]
+              if len(tarballs) != 1:
+                  raise ValueError(f'expected exactly one tarball, but found the following: {tarballs}')
+              tarball = tarballs[0]
+              name, version = tarball.name.removesuffix('.tar.gz').split('-')
+              print(f'name: {name}')
+              print(f'version: {version}')
+              # Try to find a pure Python wheel.
+              if (wheel := dist / f'{name}-{version}-py3-none-any.whl').exists():
+                  return wheel
+              # Try to find a manylinux wheel.
+              wheels = [
+                  path
+                  for path in dist.iterdir()
+                  if path.suffix == '.whl'
+                      and path.name.startswith(f'{name}-{version}-')
+                      and 'manylinux' in path.name
+                      and 'x86_64' in path.name
+              ]
+              if len(wheels) > 1:
+                  raise ValueError(f'expected exactly one manylinux wheel, but found the following: {wheels}')
+              if len(wheels) == 1:
+                  return wheels[0]
+              raise ValueError('could not find a pure Python or manylinux wheel')
+          package = str(find_wheel())
+          print(f'found wheel: {package}')
+          if extras := os.environ.get('extras', ''):
+              package += f'[{extras}]'
+          requirements = [package, 'sphinx', 'sphinx-rtd-theme']
+          requirements.extend(filter(None, os.environ.get('requirements', '').split(' ')))
+          subprocess.check_call([sys.executable, '-m', 'pip', 'install', *requirements])
+      - name: Build documentation
+        run: python -m sphinx -n -b dirhtml -D html_theme=sphinx_rtd_theme "$source" target/sphinx
+      - name: Upload documentation
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ inputs.artifact }}
+          path: target/sphinx
